@@ -1,0 +1,164 @@
+name: Contribution City
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 18 * * *"
+  push:
+    paths:
+      - .github/workflows/contribution-city.yml
+permissions:
+  contents: write
+concurrency:
+  group: contribution-city
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Generate contribution city
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USERNAME: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import html
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          query = """
+          query($login: String!) {
+            user(login: $login) {
+              login
+              contributionsCollection {
+                contributionCalendar {
+                  totalContributions
+                  weeks {
+                    contributionDays {
+                      date
+                      weekday
+                      contributionCount
+                    }
+                  }
+                }
+              }
+            }
+          }
+          """
+          request = urllib.request.Request(
+              os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+              data=json.dumps({"query": query, "variables": {"login": os.environ["GH_USERNAME"]}}).encode(),
+              headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "Content-Type": "application/json",
+                  "User-Agent": "github-contribution-city"
+              },
+              method="POST"
+          )
+          for attempt in range(3):
+              try:
+                  with urllib.request.urlopen(request, timeout=40) as response:
+                      payload = json.load(response)
+                  if payload.get("errors"):
+                      raise RuntimeError("GitHub GraphQL: " + "; ".join(item["message"] for item in payload["errors"]))
+                  break
+              except urllib.error.HTTPError as error:
+                  if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                      raise
+                  time.sleep(2 ** (attempt + 1))
+              except (urllib.error.URLError, TimeoutError):
+                  if attempt == 2:
+                      raise
+                  time.sleep(2 ** (attempt + 1))
+          user = payload.get("data", {}).get("user")
+          if not user:
+              raise RuntimeError("GitHub user not found. Use this workflow in your personal profile repository.")
+          calendar = user["contributionsCollection"]["contributionCalendar"]
+          days = [dict(day, week=week) for week, item in enumerate(calendar["weeks"]) for day in item["contributionDays"]]
+          if not days:
+              raise RuntimeError("GitHub returned an empty contribution calendar.")
+          total = calendar["totalContributions"]
+          active = sum(day["contributionCount"] > 0 for day in days)
+          busiest = max(day["contributionCount"] for day in days)
+          login = html.escape(user["login"])
+          sx, sy = 9.8, 5.65
+          hw, hh = 9.25, 5.33
+          for day in days:
+              day["x"] = (day["week"] - day["weekday"]) * sx
+              day["y"] = (day["week"] + day["weekday"]) * sy
+              day["height"] = 5 + 105 * day["contributionCount"] / busiest if day["contributionCount"] else 0
+          min_x = min(day["x"] - hw for day in days)
+          max_x = max(day["x"] + hw for day in days)
+          min_y = min(day["y"] - day["height"] for day in days)
+          max_y = max(day["y"] + hh * 2 for day in days)
+          scale = min(600 / (max_x - min_x), 375 / (max_y - min_y))
+          tx = 245 + (600 - (max_x - min_x) * scale) / 2 - min_x * scale
+          ty = 25 + (375 - (max_y - min_y) * scale) / 2 - min_y * scale
+          parts = [
+              '<svg xmlns="http://www.w3.org/2000/svg" width="880" height="430" viewBox="0 0 880 430" role="img" aria-labelledby="title description">',
+              f'<title id="title">Contribution City for @{login}</title>',
+              f'<desc id="description">{total:,} contributions in the last year, {active} active days, and {busiest} contributions on the busiest day. Each tile is one day; taller buildings represent more contributions.</desc>',
+              '<defs><linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#042f2e"/><stop offset="0.55" stop-color="#124b46"/><stop offset="1" stop-color="#07332f"/></linearGradient></defs>',
+              '<rect x="0.75" y="0.75" width="878.5" height="428.5" rx="20" fill="url(#background)" stroke="#19b7a5" stroke-width="1.5"/>',
+              '<g font-family="Arial, Helvetica, sans-serif">',
+              '<text x="34" y="53" fill="#29dac6" font-family="monospace" font-size="11" font-weight="700" letter-spacing="2">CONTRIBUTION CITY</text>',
+              f'<text x="34" y="88" fill="#ccfff5" font-size="32" font-weight="800">{total:,}</text>',
+              '<text x="34" y="111" fill="#5ee9d6" font-size="13" font-weight="600">contributions in the last year</text>',
+              f'<text x="34" y="144" fill="#5ee9d6" font-size="12" font-weight="600">{active} active days</text>',
+              f'<text x="34" y="165" fill="#5ee9d6" font-size="12" font-weight="600">Busiest day: {busiest}</text>',
+              f'<text x="34" y="390" fill="#5dd5c4" font-family="monospace" font-size="11">@{login}</text>',
+              '<text x="34" y="410" fill="#51a99e" font-size="10">GitHub contribution calendar</text>',
+              '</g>',
+              f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.5f})">'
+          ]
+          def polygon(points, fill):
+              coordinates = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+              return f'<polygon points="{coordinates}" fill="{fill}"/>'
+
+          for day in days:
+              x, y = day["x"], day["y"]
+              parts.append(polygon([(x, y), (x + hw, y + hh), (x, y + 2 * hh), (x - hw, y + hh)], "#1a6c65"))
+          palettes = [
+              ("#36cdbc", "#24b5a5", "#1d958b"),
+              ("#54ddcc", "#37c4b4", "#2aaa9e"),
+              ("#74e8d9", "#52d1c0", "#3eb3a8"),
+              ("#97f0e4", "#6bddce", "#4eb9ae")
+          ]
+          for day in sorted(days, key=lambda item: (item["week"] + item["weekday"], item["week"])):
+              count = day["contributionCount"]
+              if not count:
+                  continue
+              x, y, height = day["x"], day["y"], day["height"]
+              top, left, right = palettes[min(3, int(count / busiest * 4))]
+              parts.append(f'<g><title>{html.escape(day["date"])}: {count} contributions</title>')
+              parts.append(polygon([(x - hw, y + hh), (x, y + 2 * hh), (x, y + 2 * hh - height), (x - hw, y + hh - height)], left))
+              parts.append(polygon([(x, y + 2 * hh), (x + hw, y + hh), (x + hw, y + hh - height), (x, y + 2 * hh - height)], right))
+              parts.append(polygon([(x, y - height), (x + hw, y + hh - height), (x, y + 2 * hh - height), (x - hw, y + hh - height)], top))
+              parts.append('</g>')
+          parts.extend(['</g>', '</svg>'])
+          destination = Path("assets/contribution-city.svg")
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text("\n".join(parts) + "\n", encoding="utf-8")
+          print(f"Generated {destination}: {total} contributions, {active} active days.")
+          PY
+      - name: Save contribution city
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- assets/contribution-city.svg
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Update contribution city"
+          git pull --rebase
+          git push
