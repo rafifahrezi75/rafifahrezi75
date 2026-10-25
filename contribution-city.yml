@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - .github/workflows/contribution-city.yml
+      - docs/**
 permissions:
   contents: write
 concurrency:
@@ -20,7 +21,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: Generate contribution city
+      - name: Generate horizontal city and interactive viewer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_USERNAME: ${{ github.repository_owner }}
@@ -90,75 +91,317 @@ jobs:
           active = sum(day["contributionCount"] > 0 for day in days)
           busiest = max(day["contributionCount"] for day in days)
           login = html.escape(user["login"])
-          sx, sy = 9.8, 5.65
-          hw, hh = 9.25, 5.33
-          for day in days:
-              day["x"] = (day["week"] - day["weekday"]) * sx
-              day["y"] = (day["week"] + day["weekday"]) * sy
-              day["height"] = 5 + 105 * day["contributionCount"] / busiest if day["contributionCount"] else 0
-          min_x = min(day["x"] - hw for day in days)
-          max_x = max(day["x"] + hw for day in days)
-          min_y = min(day["y"] - day["height"] for day in days)
-          max_y = max(day["y"] + hh * 2 for day in days)
-          scale = min(600 / (max_x - min_x), 375 / (max_y - min_y))
-          tx = 245 + (600 - (max_x - min_x) * scale) / 2 - min_x * scale
-          ty = 25 + (375 - (max_y - min_y) * scale) / 2 - min_y * scale
-          parts = [
-              '<svg xmlns="http://www.w3.org/2000/svg" width="880" height="430" viewBox="0 0 880 430" role="img" aria-labelledby="title description">',
-              f'<title id="title">Contribution City for @{login}</title>',
-              f'<desc id="description">{total:,} contributions in the last year, {active} active days, and {busiest} contributions on the busiest day. Each tile is one day; taller buildings represent more contributions.</desc>',
-              '<defs><linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#042f2e"/><stop offset="0.55" stop-color="#124b46"/><stop offset="1" stop-color="#07332f"/></linearGradient></defs>',
-              '<rect x="0.75" y="0.75" width="878.5" height="428.5" rx="20" fill="url(#background)" stroke="#19b7a5" stroke-width="1.5"/>',
-              '<g font-family="Arial, Helvetica, sans-serif">',
-              '<text x="34" y="53" fill="#29dac6" font-family="monospace" font-size="11" font-weight="700" letter-spacing="2">CONTRIBUTION CITY</text>',
-              f'<text x="34" y="88" fill="#ccfff5" font-size="32" font-weight="800">{total:,}</text>',
-              '<text x="34" y="111" fill="#5ee9d6" font-size="13" font-weight="600">contributions in the last year</text>',
-              f'<text x="34" y="144" fill="#5ee9d6" font-size="12" font-weight="600">{active} active days</text>',
-              f'<text x="34" y="165" fill="#5ee9d6" font-size="12" font-weight="600">Busiest day: {busiest}</text>',
-              f'<text x="34" y="390" fill="#5dd5c4" font-family="monospace" font-size="11">@{login}</text>',
-              '<text x="34" y="410" fill="#51a99e" font-size="10">GitHub contribution calendar</text>',
-              '</g>',
-              f'<g transform="translate({tx:.3f} {ty:.3f}) scale({scale:.5f})">'
-          ]
+          from datetime import date, datetime, timezone
+          width, height = 1440, 490
+          week_count = len(calendar["weeks"])
+          step_x = (1338 - 7 * 5.6) / max(week_count, 1)
+          tile_width, depth_x, depth_y = step_x - 1.8, 5.6, 10.4
+          palettes = [("#3ad2bd", "#28b7a5", "#198c80"), ("#5ce0cb", "#40c9b5", "#279e92"), ("#82ebd8", "#5cd6c0", "#3bb2a1"), ("#b0fae9", "#7ce7d1", "#4dc4b0")]
           def polygon(points, fill):
-              coordinates = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+              coordinates = " ".join(f"{x:.3f},{y:.3f}" for x, y in points)
               return f'<polygon points="{coordinates}" fill="{fill}"/>'
 
-          for day in days:
-              x, y = day["x"], day["y"]
-              parts.append(polygon([(x, y), (x + hw, y + hh), (x, y + 2 * hh), (x - hw, y + hh)], "#1a6c65"))
-          palettes = [
-              ("#36cdbc", "#24b5a5", "#1d958b"),
-              ("#54ddcc", "#37c4b4", "#2aaa9e"),
-              ("#74e8d9", "#52d1c0", "#3eb3a8"),
-              ("#97f0e4", "#6bddce", "#4eb9ae")
-          ]
-          for day in sorted(days, key=lambda item: (item["week"] + item["weekday"], item["week"])):
+          scene = ['<g id="city-blocks">']
+          for day in sorted(days, key=lambda item: (item["weekday"], -item["week"])):
               count = day["contributionCount"]
-              if not count:
-                  continue
-              x, y, height = day["x"], day["y"], day["height"]
-              top, left, right = palettes[min(3, int(count / busiest * 4))]
-              parts.append(f'<g><title>{html.escape(day["date"])}: {count} contributions</title>')
-              parts.append(polygon([(x - hw, y + hh), (x, y + 2 * hh), (x, y + 2 * hh - height), (x - hw, y + hh - height)], left))
-              parts.append(polygon([(x, y + 2 * hh), (x + hw, y + hh), (x + hw, y + hh - height), (x, y + 2 * hh - height)], right))
-              parts.append(polygon([(x, y - height), (x + hw, y + hh - height), (x, y + 2 * hh - height), (x - hw, y + hh - height)], top))
-              parts.append('</g>')
-          parts.extend(['</g>', '</svg>'])
+              x = 42 + day["week"] * step_x + day["weekday"] * depth_x
+              y = 206 + day["weekday"] * 12
+              rise = 5 + 160 * count / busiest if count else 0
+              d = html.escape(day["date"])
+              points = [(x, y), (x + tile_width, y), (x + tile_width + depth_x, y + depth_y), (x + depth_x, y + depth_y)]
+              scene.append(f'<g class="day" data-date="{d}" data-count="{count}" tabindex="-1" role="button" aria-label="{d}: {count} kontribusi" aria-pressed="false"><title>{d}: {count} kontribusi</title>')
+              scene.append(polygon(points, "#195f58" if not count else "#217c6d"))
+              if count:
+                  top, front, side = palettes[min(3, int(count / busiest * 4))]
+                  scene.append(polygon([points[2], points[3], (points[3][0], points[3][1] - rise), (points[2][0], points[2][1] - rise)], front))
+                  scene.append(polygon([points[1], points[2], (points[2][0], points[2][1] - rise), (points[1][0], points[1][1] - rise)], side))
+                  scene.append(polygon([(px, py - rise) for px, py in points], top))
+              scene.append('</g>')
+          scene.append('</g><g font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#67a99e" pointer-events="none">')
+          seen_months = set()
+          for day in days:
+              day_date = date.fromisoformat(day["date"])
+              month_key = (day_date.year, day_date.month)
+              if month_key not in seen_months:
+                  seen_months.add(month_key)
+                  if day["week"] < week_count - 1 and day_date.day <= 10:
+                      mx = 42 + day["week"] * step_x
+                      scene.append(f'<text x="{mx:.3f}" y="321">{day_date.strftime("%b")}</text>')
+          scene.append('</g>')
+          scene_markup = "\n".join(scene)
+          total_text = f"{total:,}"
+          parts = [
+              f'<svg xmlns="http://www.w3.org/2000/svg" width="2160" height="735" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title description">',
+              f'<title id="title">Contribution City for @{login}</title>',
+              f'<desc id="description">Horizontal 3D calendar. {total:,} contributions in the last year, {active} active days, busiest day {busiest}. Open the interactive page to zoom into a day.</desc>',
+              '<defs><linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#042f2e"/><stop offset="0.55" stop-color="#124b46"/><stop offset="1" stop-color="#07332f"/></linearGradient></defs>',
+              '<rect x="1" y="1" width="1438" height="488" rx="24" fill="url(#background)" stroke="#19b7a5" stroke-width="2"/>',
+              '<g font-family="Arial, Helvetica, sans-serif">',
+              '<text x="38" y="42" fill="#36d9c3" font-family="monospace" font-size="14" font-weight="700" letter-spacing="2.5">CONTRIBUTION CITY</text>',
+              f'<text x="38" y="96" fill="#d0fff2" font-size="48" font-weight="800">{total_text}</text>',
+              '<text x="38" y="120" fill="#70dfca" font-size="16">contributions in the last year</text>',
+              '<text x="1054" y="47" fill="#70c6b6" font-size="13" letter-spacing="1.2">ACTIVE DAYS</text>',
+              f'<text x="1054" y="89" fill="#c9ffed" font-size="34" font-weight="700">{active}</text>',
+              '<text x="1240" y="47" fill="#70c6b6" font-size="13" letter-spacing="1.2">BUSIEST DAY</text>',
+              f'<text x="1240" y="89" fill="#c9ffed" font-size="34" font-weight="700">{busiest}</text>',
+              f'<text x="38" y="469" fill="#6bd6c3" font-family="monospace" font-size="14">@{login}</text>',
+              '<text x="1400" y="469" text-anchor="end" fill="#6bd6c3" font-size="13">Click to explore each day</text>',
+              '</g><g transform="translate(0 120)">', scene_markup, '</g></svg>'
+          ]
           destination = Path("assets/contribution-city.svg")
           destination.parent.mkdir(parents=True, exist_ok=True)
           destination.write_text("\n".join(parts) + "\n", encoding="utf-8")
-          print(f"Generated {destination}: {total} contributions, {active} active days.")
+          data = {"username": user["login"], "total": total, "active": active, "busiest": busiest, "updated": datetime.now(timezone.utc).isoformat(), "days": [{"date": day["date"], "count": day["contributionCount"]} for day in days]}
+
+          template = r'''<!doctype html>
+          <html lang="id">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="color-scheme" content="dark">
+          <meta name="description" content="Jelajahi kontribusi GitHub per hari dalam kota 3D interaktif.">
+          <title>Contribution City - __USERNAME__</title>
+          <style>
+          :root{font-family:Arial,Helvetica,sans-serif;color:#d5fff0;background:#061d1c;font-synthesis:none;color-scheme:dark}
+          *{box-sizing:border-box}
+          body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 50% 0,#123e37 0,transparent 65%),#061d1c}
+          button,input,a{-webkit-tap-highlight-color:transparent}
+          button,input{font:inherit}
+          button{cursor:pointer;color:#c6f8e9;border:1px solid #34766a;background:#103e35;border-radius:10px;min-height:42px;padding:10px 15px;transition:background .15s,border-color .15s}
+          button:hover{background:#1b574a;border-color:#8ae8c8}
+          button:disabled{opacity:.35;cursor:default}
+          button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #bcffe7;outline-offset:4px}
+          a{color:#82e7c9;text-decoration:none}
+          a:hover{text-decoration:underline}
+          main{width:min(1500px,100%);margin:auto;padding:38px 28px 26px}
+          .topline{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:28px}
+          .eyebrow{font:700 12px monospace;letter-spacing:2.6px;color:#55ddbb}
+          .profile{font:13px monospace}
+          h1{font-size:clamp(26px,3.2vw,44px);font-weight:650;letter-spacing:-1.4px;line-height:1.15;margin:0 0 12px}
+          .intro{color:#92bdb0;font-size:14px;line-height:1.6;margin:0 0 28px}
+          .card{border:1px solid #267e69;border-radius:22px;background:linear-gradient(135deg,#073a32,#104b3e 55%,#062f29);overflow:hidden;box-shadow:0 24px 80px #0003}
+          .metrics{display:flex;gap:50px;padding:25px 30px 20px;border-bottom:1px solid #84e8c319;align-items:end}
+          .metric:first-child{margin-right:auto}
+          .metric strong{display:block;font-size:36px;font-weight:700;letter-spacing:-1px;color:#c5ffdf;font-variant-numeric:tabular-nums}
+          .metric:first-child strong{font-size:46px}
+          .metric span{display:block;color:#83c5ae;font-size:12px;margin-top:6px}
+          .toolbar{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:18px 28px 0;flex-wrap:wrap}
+          .date-control{display:flex;align-items:center;gap:12px;color:#8fcab7;font-size:12px}
+          input[type=date]{background:#082d28;border:1px solid #34766a;color:#c5f9e9;border-radius:9px;padding:10px 12px;min-height:42px;min-width:140px}
+          .controls{display:flex;gap:7px;align-items:center}
+          .controls button[data-zoom]{font-size:20px;padding:4px 14px;min-width:42px}
+          .controls output{font:12px monospace;color:#9adac4;min-width:45px;text-align:center}
+          .scene-wrap{position:relative;margin:0 15px}
+          #city-view{display:block;width:100%;height:clamp(310px,29vw,440px);overflow:hidden;touch-action:none;cursor:grab;user-select:none}
+          #city-view[data-dragging=true]{cursor:grabbing}
+          .day{cursor:pointer;outline:none}
+          .day polygon{stroke-linejoin:round}
+          .day:hover polygon{filter:brightness(1.16)}
+          .day[aria-pressed=true] polygon{stroke:#ecffc4;stroke-width:1.3;paint-order:stroke fill;vector-effect:non-scaling-stroke}
+          .day:focus-visible polygon{stroke:#fff4b7;stroke-width:2;vector-effect:non-scaling-stroke}
+          .detail{margin:0 28px 22px;padding:18px 22px;border:1px solid #68cda13d;border-radius:14px;background:#052e28aa;display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:98px}
+          .detail small{font:10px monospace;letter-spacing:1.8px;color:#76b8a2}
+          .detail h2{font-size:18px;font-weight:500;margin:8px 0 0;color:#d1fce8}
+          .detail-value{display:flex;gap:11px;align-items:baseline;margin-left:auto}
+          .detail-value strong{font-size:38px;color:#c5ffdf;line-height:1;font-variant-numeric:tabular-nums}
+          .detail-value span{font-size:12px;color:#8fcab7}
+          .day-nav{display:flex;gap:7px}
+          .hint{margin:0 28px 22px;display:flex;justify-content:space-between;gap:16px;font-size:11px;color:#76a994;line-height:1.6}
+          footer{display:flex;justify-content:space-between;gap:18px;margin:20px 4px 0;color:#68917f;font-size:11px;line-height:1.6}
+          noscript p{padding:16px 28px;color:#ffe5a3}
+          @media(max-width:700px){main{padding:24px 14px}.topline{margin-bottom:24px}.metrics{padding:22px 20px;gap:24px}.metric strong{font-size:28px}.metric:first-child strong{font-size:36px}.metric span{font-size:10px}.toolbar{padding:16px 18px 0;gap:12px}.date-control{justify-content:space-between;flex:1}.controls{margin-left:auto}.scene-wrap{margin:0 4px}.detail{margin:0 16px 18px;padding:16px;flex-wrap:wrap}.detail h2{font-size:16px}.detail-value strong{font-size:32px}.day-nav{width:100%;justify-content:flex-end}.hint{margin:0 18px 18px;flex-wrap:wrap;gap:5px}footer{flex-wrap:wrap;gap:5px}.profile{font-size:11px}.eyebrow{font-size:10px}.intro{font-size:13px}}
+          @media(prefers-reduced-motion:reduce){button{transition:none}}
+          </style>
+          </head>
+          <body>
+          <main>
+          <div class="topline"><span class="eyebrow">CONTRIBUTION CITY</span><a class="profile" href="https://github.com/__USERNAME__">@__USERNAME__</a></div>
+          <h1>The city I built this year</h1>
+          <p class="intro">Klik satu batang untuk memperbesar dan melihat jumlah kontribusi pada hari itu.</p>
+          <section class="card" aria-label="Kalender kontribusi interaktif">
+          <div class="metrics"><div class="metric"><strong id="total">__TOTAL__</strong><span>Kontribusi setahun terakhir</span></div><div class="metric"><strong>__ACTIVE__</strong><span>Hari aktif</span></div><div class="metric"><strong>__BUSIEST__</strong><span>Hari tersibuk</span></div></div>
+          <div class="toolbar"><label class="date-control" for="pick-date">Pilih tanggal<input id="pick-date" type="date" min="__FIRST__" max="__LAST__"></label><div class="controls" aria-label="Kontrol tampilan"><button type="button" id="zoom-out" data-zoom aria-label="Perkecil">-</button><output id="zoom-level" aria-label="Tingkat pembesaran">1.0x</output><button type="button" id="zoom-in" data-zoom aria-label="Perbesar">+</button><button type="button" id="reset">Lihat semua</button></div></div>
+          <div class="scene-wrap"><svg id="city-view" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 340" role="group" aria-label="Batang kontribusi harian. Gunakan tombol panah untuk berpindah hari dan Enter untuk memilih.">__GRAPH__</svg></div>
+          <div class="detail" aria-live="polite" aria-atomic="true"><div><small>DETAIL HARI</small><h2 id="detail-date">Pilih batang atau tanggal</h2></div><div class="detail-value"><strong id="detail-count">-</strong><span>kontribusi</span></div><div class="day-nav"><button type="button" id="prev-day" aria-label="Hari sebelumnya" disabled>Sebelumnya</button><button type="button" id="next-day" aria-label="Hari berikutnya" disabled>Berikutnya</button></div></div>
+          <div class="hint"><span>Geser untuk menjelajah. Scroll atau gunakan + / - untuk zoom.</span><span>Satu batang = satu hari. Tinggi = jumlah kontribusi.</span></div>
+          <noscript><p>Aktifkan JavaScript untuk zoom dan rincian per hari. Kalender tetap ditampilkan di atas.</p></noscript>
+          </section>
+          <footer><span id="date-range">__FIRST__ - __LAST__</span><span id="updated"></span></footer>
+          </main>
+          <script id="city-data" type="application/json">__DATA__</script>
+          <script>
+          const data=JSON.parse(document.getElementById("city-data").textContent);
+          const scene=document.getElementById("city-view");
+          const picker=document.getElementById("pick-date");
+          const nodes=new Map(Array.from(scene.querySelectorAll(".day"),node=>[node.dataset.date,node]));
+          const dateFormat=new Intl.DateTimeFormat("id-ID",{dateStyle:"full",timeZone:"UTC"});
+          const shortFormat=new Intl.DateTimeFormat("id-ID",{dateStyle:"medium",timeZone:"UTC"});
+          const numberFormat=new Intl.NumberFormat("id-ID");
+          const reducedMotion=window.matchMedia("(prefers-reduced-motion: reduce)");
+          const prev=document.getElementById("prev-day");
+          const next=document.getElementById("next-day");
+          let current=[0,0,1440,340],home=current.slice(),selected=-1,animation=0,drag=null;
+          function bounds(view){
+            const [x,y,w,h]=view;
+            return [Math.min(1500-w/2,Math.max(-60-w/2,x)),Math.min(450-h/2,Math.max(-140-h/2,y)),w,h];
+          }
+          function draw(view){
+            current=view;
+            scene.setAttribute("viewBox",view.map(value=>value.toFixed(4)).join(" "));
+            document.getElementById("zoom-level").textContent=(home[2]/view[2]).toFixed(1)+"x";
+            document.getElementById("zoom-in").disabled=view[2]<=home[2]/9+.01;
+            document.getElementById("zoom-out").disabled=view[2]>=home[2]-.01;
+          }
+          function move(view,animate=true){
+            cancelAnimationFrame(animation);
+            const target=bounds(view);
+            if(!animate||reducedMotion.matches){draw(target);return;}
+            const start=current.slice(),time=performance.now();
+            function frame(now){
+              const p=Math.min(1,(now-time)/430),ease=1-Math.pow(1-p,3);
+              draw(start.map((value,i)=>value+(target[i]-value)*ease));
+              if(p<1)animation=requestAnimationFrame(frame);
+            }
+            animation=requestAnimationFrame(frame);
+          }
+          function selectDay(index,focus=false){
+            if(index<0||index>=data.days.length)return;
+            if(selected>=0){const old=nodes.get(data.days[selected].date);old.setAttribute("aria-pressed","false");old.setAttribute("tabindex","-1");}
+            selected=index;
+            const day=data.days[index],node=nodes.get(day.date);
+            node.setAttribute("aria-pressed","true");
+            for(const candidate of nodes.values())candidate.setAttribute("tabindex",candidate===node?"0":"-1");
+            picker.value=day.date;
+            document.getElementById("detail-date").textContent=dateFormat.format(new Date(day.date+"T12:00:00Z"));
+            document.getElementById("detail-count").textContent=numberFormat.format(day.count);
+            prev.disabled=index===0;
+            next.disabled=index===data.days.length-1;
+            const box=node.getBBox(),aspect=home[2]/home[3];
+            const w=Math.min(home[2],Math.max(home[2]/6,(box.height+74)*aspect));
+            const h=w/aspect;
+            move([box.x+box.width/2-w/2,box.y+box.height/2-h/2,w,h]);
+            if(focus)node.focus({preventScroll:true});
+            history.replaceState(null,"","#"+day.date);
+          }
+          function reset(animate=true){move(home.slice(),animate);}
+          function zoom(factor,anchor){
+            const w=Math.min(home[2],Math.max(home[2]/9,current[2]*factor));
+            const h=w*home[3]/home[2];
+            const point=anchor||[current[0]+current[2]/2,current[1]+current[3]/2];
+            const rx=(point[0]-current[0])/current[2],ry=(point[1]-current[1])/current[3];
+            move([point[0]-w*rx,point[1]-h*ry,w,h],!anchor);
+          }
+          function localPoint(event){
+            const point=new DOMPoint(event.clientX,event.clientY);
+            const matrix=scene.getScreenCTM();
+            return matrix?point.matrixTransform(matrix.inverse()):null;
+          }
+          function resize(){
+            const rect=scene.getBoundingClientRect(),aspect=Math.max(.3,rect.width/rect.height);
+            const w=Math.max(1440,340*aspect),h=w/aspect;
+            home=[720-w/2,170-h/2,w,h];
+            if(selected>=0)selectDay(selected);else reset(false);
+          }
+          scene.addEventListener("pointerdown",event=>{
+            if(event.button!==0||!event.isPrimary)return;
+            cancelAnimationFrame(animation);
+            drag={id:event.pointerId,x:event.clientX,y:event.clientY,start:current.slice(),target:event.target.closest(".day"),moved:false};
+          });
+          scene.addEventListener("pointermove",event=>{
+            if(!drag||event.pointerId!==drag.id)return;
+            const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
+            if(Math.hypot(dx,dy)>5&&!drag.moved){drag.moved=true;scene.setPointerCapture(event.pointerId);scene.dataset.dragging="true";}
+            if(!drag.moved)return;
+            const rect=scene.getBoundingClientRect();
+            draw(bounds([drag.start[0]-dx*drag.start[2]/rect.width,drag.start[1]-dy*drag.start[3]/rect.height,drag.start[2],drag.start[3]]));
+          });
+          function endDrag(event){
+            if(!drag||event.pointerId!==drag.id)return;
+            const state=drag;
+            drag=null;
+            scene.dataset.dragging="false";
+            if(scene.hasPointerCapture(event.pointerId))scene.releasePointerCapture(event.pointerId);
+            if(event.type==="pointerup"&&!state.moved&&state.target)selectDay(data.days.findIndex(day=>day.date===state.target.dataset.date));
+          }
+          scene.addEventListener("pointerup",endDrag);
+          scene.addEventListener("pointercancel",endDrag);
+          window.addEventListener("pointerup",endDrag);
+          scene.addEventListener("wheel",event=>{
+            event.preventDefault();
+            const point=localPoint(event);
+            if(point)zoom(event.deltaY>0?1.12:.89,[point.x,point.y]);
+          },{passive:false});
+          scene.addEventListener("keydown",event=>{
+            const node=event.target.closest(".day");
+            const index=node?data.days.findIndex(day=>day.date===node.dataset.date):selected;
+            if(event.key==="Enter"||event.key===" "){event.preventDefault();selectDay(index);}
+            if(event.key==="ArrowRight"||event.key==="ArrowLeft"){event.preventDefault();selectDay(Math.min(data.days.length-1,Math.max(0,index+(event.key==="ArrowRight"?1:-1))),true);}
+          });
+          document.addEventListener("keydown",event=>{if(event.key==="Escape")reset();});
+          document.getElementById("reset").addEventListener("click",()=>reset());
+          document.getElementById("zoom-in").addEventListener("click",()=>zoom(.72));
+          document.getElementById("zoom-out").addEventListener("click",()=>zoom(1/.72));
+          prev.addEventListener("click",()=>selectDay(selected-1));
+          next.addEventListener("click",()=>selectDay(selected+1));
+          picker.addEventListener("change",()=>selectDay(data.days.findIndex(day=>day.date===picker.value)));
+          document.getElementById("date-range").textContent=shortFormat.format(new Date(data.days[0].date+"T12:00:00Z"))+" - "+shortFormat.format(new Date(data.days.at(-1).date+"T12:00:00Z"));
+          document.getElementById("updated").textContent="Diperbarui "+new Intl.DateTimeFormat("id-ID",{dateStyle:"medium",timeStyle:"short",timeZone:"Asia/Jakarta"}).format(new Date(data.updated))+" WIB";
+          nodes.get(data.days[0].date).setAttribute("tabindex","0");
+          resize();
+          const initial=data.days.findIndex(day=>day.date===location.hash.slice(1));
+          if(initial>=0)selectDay(initial);
+          let resizeTimer;
+          window.addEventListener("resize",()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(resize,120);});
+          </script>
+          </body>
+          </html>
+          '''
+
+          replacements = {
+              "__USERNAME__": login, "__TOTAL__": total_text, "__ACTIVE__": str(active),
+              "__BUSIEST__": str(busiest), "__FIRST__": days[0]["date"], "__LAST__": days[-1]["date"],
+              "__GRAPH__": scene_markup, "__DATA__": json.dumps(data, ensure_ascii=True).replace("</", "<\\/")
+          }
+          for key, value in replacements.items():
+              template = template.replace(key, value)
+          viewer = Path("docs/contribution-city/index.html")
+          viewer.parent.mkdir(parents=True, exist_ok=True)
+          viewer.write_text(template, encoding="utf-8")
+          landing = Path("docs/index.html")
+          if not landing.exists():
+              landing.write_text('<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=./contribution-city/"><title>Contribution City</title></head><body><a href="./contribution-city/">Buka Contribution City</a></body></html>\n', encoding="utf-8")
+          print(f"Generated horizontal SVG and interactive city: {total} contributions, {active} active days.")
           PY
-      - name: Save contribution city
+      - name: Save city files
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- assets/contribution-city.svg
+          git add -- assets/contribution-city.svg docs/contribution-city/index.html docs/index.html
           if git diff --cached --quiet; then
             exit 0
           fi
           git commit -m "Update contribution city"
           git pull --rebase
           git push
+      - name: Upload interactive city
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Publish interactive city
+        id: deployment
+        uses: actions/deploy-pages@v4
